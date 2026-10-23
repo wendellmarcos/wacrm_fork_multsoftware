@@ -1,0 +1,99 @@
+# CI do wacrm_fork_multsoftware no Forgejo do dell-srv.
+# Equivalente a .github/workflows/ci.yml, que fica desativado no GitHub: só o Forgejo automatiza
+# (o GitHub ignora .forgejo/).
+#
+# - checkout com git: o actions/checkout perde o subcaminho /forgejo/ do Forgejo do dell-srv.
+#   Cada job roda numa rede docker própria; o Forgejo é http://forgejo:3030
+#   (--add-host=forgejo:host-gateway no runner);
+# - Node 20 vem da imagem do contêiner (sem actions/setup-node); sem `concurrency`;
+# - o mcp-server ganhou typecheck e build próprios;
+# - migrations.yml (Supabase CLI, que sobe Postgres em Docker) não foi migrado: os jobs não têm Docker.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: Lint, typecheck, test, build
+    runs-on: docker
+    container:
+      image: node:20-bookworm
+    timeout-minutes: 30
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: https://ci.example.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-dummy-anon-key
+      ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
+      META_APP_SECRET: 'ci-dummy-meta-secret'
+    steps:
+      - name: Checkout
+        env:
+          TOKEN: ${{ github.token }}
+          SERVER: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+        run: |
+          git init -q .
+          git remote add origin "${SERVER%/}/${REPO}.git"
+          for base in http://forgejo:3030 http://forgejo:3000 "${SERVER%/}"; do
+            git -c "http.extraHeader=Authorization: token ${TOKEN}" fetch -q --depth 50 "$base/${REPO}.git" "$REF" 2>/dev/null && break
+          done
+          git checkout -q "$SHA"
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  mcp-server:
+    name: "MCP server: typecheck e build"
+    runs-on: docker
+    container:
+      image: node:20-bookworm
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        env:
+          TOKEN: ${{ github.token }}
+          SERVER: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+        run: |
+          git init -q .
+          git remote add origin "${SERVER%/}/${REPO}.git"
+          for base in http://forgejo:3030 http://forgejo:3000 "${SERVER%/}"; do
+            git -c "http.extraHeader=Authorization: token ${TOKEN}" fetch -q --depth 50 "$base/${REPO}.git" "$REF" 2>/dev/null && break
+          done
+          git checkout -q "$SHA"
+
+      - name: Dependências
+        working-directory: mcp-server
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        working-directory: mcp-server
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: mcp-server
+        run: npm run build
